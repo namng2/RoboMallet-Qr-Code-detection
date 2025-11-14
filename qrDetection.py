@@ -1,14 +1,14 @@
 import cv2
 import time
 
-# Try AVFoundation backend on macOS for better camera support
-cam = cv2.VideoCapture(1, cv2.CAP_AVFOUNDATION)
+
+cam = cv2.VideoCapture(0, cv2.CAP_AVFOUNDATION)
 
 if not cam.isOpened():
     print("Error: Could not open camera.")
     exit(1)
 
-# Force camera output to 640x480 and remember the desired size
+
 frame_size = (640, 480)
 cam.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
 cam.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)

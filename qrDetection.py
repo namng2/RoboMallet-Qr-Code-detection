@@ -1,19 +1,80 @@
 import cv2
 import time
+import numpy as np
 
+# Choose the correct camera index (0, 1, 2...)
+CAM_INDEX = 0
+FRAME_WIDTH = 1280
+FRAME_HEIGHT = 720
 
-cam = cv2.VideoCapture(0, cv2.CAP_AVFOUNDATION)
+cam = cv2.VideoCapture(CAM_INDEX, cv2.CAP_AVFOUNDATION)
 
 if not cam.isOpened():
-    print("Error: Could not open camera.")
+    print(f"Error: Could not open camera at index {CAM_INDEX}.")
     exit(1)
 
+# Ask for a reasonable resolution
+cam.set(cv2.CAP_PROP_FRAME_WIDTH, FRAME_WIDTH)
+cam.set(cv2.CAP_PROP_FRAME_HEIGHT, FRAME_HEIGHT)
 
-frame_size = (640, 480)
-cam.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-cam.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+# Confirm what we actually got
+frame_size = (
+    int(cam.get(cv2.CAP_PROP_FRAME_WIDTH)),
+    int(cam.get(cv2.CAP_PROP_FRAME_HEIGHT)),
+)
+print("Using resolution:", frame_size)
 
-qrDecoder = cv2.QRCodeDetector()
+
+def detect_airpods(frame):
+    """
+    Very simple heuristic:
+    - Find bright white-ish regions in HSV
+    - Clean up with morphology
+    - Keep medium-sized, tall-ish blobs (sort of like an AirPod stem)
+    Returns list of bounding boxes (x, y, w, h)
+    """
+    # Blur a bit to reduce noise
+    blurred = cv2.GaussianBlur(frame, (5, 5), 0)
+
+    # Convert to HSV so we can isolate white
+    hsv = cv2.cvtColor(blurred, cv2.COLOR_BGR2HSV)
+
+    # White-ish pixels: low saturation, high value
+    # You will probably need to tune these numbers!
+    lower_white = np.array([0, 0, 200])
+    upper_white = np.array([180, 60, 255])
+    mask = cv2.inRange(hsv, lower_white, upper_white)
+
+    # Morphological operations to remove noise
+    kernel = np.ones((3, 3), np.uint8)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=2)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_DILATE, kernel, iterations=1)
+
+    # Find external contours
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    boxes = []
+    for c in contours:
+        area = cv2.contourArea(c)
+        if area < 200:  # ignore tiny specks
+            continue
+
+        x, y, w, h = cv2.boundingRect(c)
+        aspect_ratio = h / float(w) if w > 0 else 0
+
+        # Heuristics:
+        # - Not ridiculously wide
+        # - Tall-ish shape (stem-ish)
+        # - Not giant (like a whole sheet of paper)
+        if aspect_ratio < 1.2:  # too flat
+            continue
+        if area > (frame.shape[0] * frame.shape[1]) * 0.3:  # huge blob
+            continue
+
+        boxes.append((x, y, w, h))
+
+    return boxes, mask
+
 
 while cam.isOpened():
     loop_start = time.perf_counter()
@@ -23,56 +84,51 @@ while cam.isOpened():
         print("Warning: Failed to grab frame from camera.")
         break
 
-    # Resize incoming frames to the requested 640x480 window
-    current_size = (frame.shape[1], frame.shape[0])
-    if current_size != frame_size:
-        frame = cv2.resize(frame, frame_size)
+    boxes, mask = detect_airpods(frame)
 
-    value, points, _ = qrDecoder.detectAndDecode(frame)
+    # Draw detection results
+    for i, (x, y, w, h) in enumerate(boxes, start=1):
+        cx, cy = x + w // 2, y + h // 2
 
-    if value and points is not None:
-        pts = points[0].astype(int)
-        x1, y1 = pts[0]
-        x2, y2 = pts[2]
-
-        x_center = int((x1 + x2) / 2)
-        y_center = int((y1 + y2) / 2)
-
-        cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-        cv2.circle(frame, (x_center, y_center), 5, (255, 0, 0), -1)
+        cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
+        cv2.circle(frame, (cx, cy), 5, (0, 0, 255), -1)
         cv2.putText(
             frame,
-            value,
-            (x1, y1 - 10),
+            f"Object {i}",
+            (x, y - 10),
             cv2.FONT_HERSHEY_SIMPLEX,
-            0.5,
+            0.6,
             (0, 255, 0),
             2,
         )
         cv2.putText(
             frame,
-            f"QR center: ({x_center}, {y_center})",
-            (x_center, y_center + 20),
+            f"Center: ({cx}, {cy})",
+            (x, y + h + 20),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.5,
-            (0, 255, 0),
+            (0, 255, 255),
             2,
         )
 
+    # FPS overlay
     loop_end = time.perf_counter()
     frame_time = loop_end - loop_start
     fps = 1 / frame_time if frame_time > 0 else 0.0
+
     cv2.putText(
         frame,
         f"FPS: {fps:.2f}",
-        (30, 70),
+        (30, 40),
         cv2.FONT_HERSHEY_SIMPLEX,
         0.7,
         (0, 255, 255),
         2,
     )
 
-    cv2.imshow("QR Code Detection", frame)
+    # Show both the frame and mask (for debugging)
+    cv2.imshow("Object Detection", frame)
+    cv2.imshow("White Mask (debug)", mask)
 
     if cv2.waitKey(1) & 0xFF == ord("q"):
         break
